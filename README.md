@@ -1,5 +1,8 @@
 # SendLan
 
+![SendLan Screenshot Application ](https://raw.githubusercontent.com/hmidani-abdelilah/sendlan/refs/heads/main/sendfile.png "sendfile GUI")
+
+![SendLan Screenshot Application ](https://raw.githubusercontent.com/hmidani-abdelilah/sendlan/refs/heads/main/sendfile_n.png "sendfile GUI")
 Sendlan is a peer-to-peer LAN application for discovering nearby devices,
 chatting, and transferring files. It targets Python 3.10+ on Windows, macOS,
 and Linux.
