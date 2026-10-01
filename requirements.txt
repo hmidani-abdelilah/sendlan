@@ -1,0 +1,7 @@
+customtkinter
+CTkMessagebox
+CTkFileDialog-plus
+CTkMenuBarPlus
+Pillow
+tkinterdnd2
+psutil
