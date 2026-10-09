@@ -10,10 +10,19 @@ import socket
 import shutil
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
-from .protocol import CHUNK_SIZE, Message, recv_exact, recv_header, recv_payload
+from .protocol import (
+    CHUNK_SIZE,
+    FILE_OFFER_TIMEOUT_SECONDS,
+    Message,
+    recv_exact,
+    recv_header,
+    recv_payload,
+    send_frame,
+)
 from .sender import DEFAULT_TCP_PORT
 from ..utils.helpers import safe_filename
 
@@ -96,6 +105,24 @@ class Receiver:
             pass
         connection.close()
         return True
+
+    @staticmethod
+    def respond_to_file_offer(
+        response_event: threading.Event,
+        response: dict[str, Any],
+        accepted: bool,
+        *,
+        timed_out: bool = False,
+    ) -> None:
+        """Publish the UI's decision for an incoming file offer."""
+        if response_event.is_set():
+            return
+        response.update(
+            accepted=accepted,
+            timed_out=timed_out,
+            responded_at=time.monotonic(),
+        )
+        response_event.set()
 
     def _accept_loop(self) -> None:
         """Accept TCP connections and dispatch each peer to a worker thread."""
@@ -192,6 +219,59 @@ class Receiver:
         ):
             raise ValueError("invalid SHA-256 digest")
 
+        response_event = threading.Event()
+        response: dict[str, Any] = {}
+        deadline = time.monotonic() + FILE_OFFER_TIMEOUT_SECONDS
+        self._publish(
+            "file_offer",
+            transfer_id=transfer_id,
+            filename=safe_name,
+            size=file_size,
+            sender=sender,
+            source=source,
+            deadline=deadline,
+            response_event=response_event,
+            response=response,
+        )
+        response_event.wait(FILE_OFFER_TIMEOUT_SECONDS)
+        responded_at = response.get("responded_at")
+        accepted = (
+            response.get("accepted") is True
+            and isinstance(responded_at, (int, float))
+            and responded_at <= deadline
+        )
+        if not accepted:
+            reason = (
+                "timeout"
+                if (
+                    not response_event.is_set()
+                    or response.get("timed_out")
+                    or (
+                        isinstance(responded_at, (int, float))
+                        and responded_at > deadline
+                    )
+                )
+                else "rejected"
+            )
+            send_frame(
+                connection,
+                {
+                    "type": "FILE_REJECT",
+                    "transfer_id": transfer_id,
+                    "reason": reason,
+                },
+            )
+            self._publish(
+                "file_offer_timeout" if reason == "timeout" else "file_offer_rejected",
+                transfer_id=transfer_id,
+                filename=safe_name,
+            )
+            return
+
+        send_frame(
+            connection,
+            {"type": "FILE_ACCEPT", "transfer_id": transfer_id},
+        )
         temporary_fd, temporary_name = tempfile.mkstemp(
             prefix=".sendlan-", suffix=".part", dir=self.download_dir
         )
@@ -202,6 +282,15 @@ class Receiver:
         with self._clients_lock:
             self._active_transfers[transfer_id] = connection
         try:
+            self._publish(
+                "file_progress",
+                transfer_id=transfer_id,
+                filename=safe_name,
+                transferred=0,
+                total=file_size,
+                sender=sender,
+                source=source,
+            )
             with os.fdopen(temporary_fd, "wb") as destination:
                 while True:
                     header = recv_header(connection)

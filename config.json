@@ -1,11 +1,11 @@
 {
   "username": "debian",
   "username_customized": false,
-  "device_id": "93ab08c54d3843bfa291841884b223f4",
+  "device_id": "3cfeded0cbf144639d20439ed11be68e",
   "tcp_port": 50001,
   "discovery_port": 50000,
   "heartbeat_interval": 3.0,
   "peer_timeout": 10.0,
   "downloads_dir": "/home/xq/Downloads/kira",
-  "appearance_mode": "system"
+  "appearance_mode": "dark"
 }

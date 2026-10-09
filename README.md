@@ -1,86 +1,79 @@
 # SendLan
 
-![SendLan Screenshot Application ](https://raw.githubusercontent.com/hmidani-abdelilah/sendlan/refs/heads/main/sendfile.png "sendfile GUI")
+## العربية / Arabic
 
-![SendLan Screenshot Application ](https://raw.githubusercontent.com/hmidani-abdelilah/sendlan/refs/heads/main/sendfile_n.png "sendfile GUI")
-Sendlan is a peer-to-peer LAN application for discovering nearby devices,
-chatting, and transferring files. It targets Python 3.10+ on Windows, macOS,
-and Linux.
+SendLan هو تطبيق مراسلة محلية داخل الشبكة المحلية (LAN)، ويستهدف تبادل الرسائل والملفات بين الأجهزة القريبة. التطبيق الأساسي يبقى كما هو للكمبيوتر، أما نسخة الهاتف فتم إعدادها بشكل منفصل داخل مجلد `android/` باستخدام Flet.
 
-## Features
-
-- Discovers peers using IPv4 broadcast heartbeats.
-- Sends chat messages and files over TCP.
-- Streams files in 64 KiB chunks and verifies SHA-256 before saving.
-- Supports cancelling transfers, drag-and-drop, and a configurable downloads
-	folder.
-- Offers a settings menu for device name, ports, discovery timing, appearance,
-	and download location.
-
-## Installation
-
-Create and activate a virtual environment, then install the dependencies.
-
-Windows PowerShell:
-
-```powershell
-py -3.10 -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-```
-
-macOS and Linux:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-```
-
-On Linux, install the operating system's Tk package if it is missing (for
-example, `python3-tk` on Debian-based distributions).
-
-## Run
-
-From the project directory:
+### التشغيل على الكمبيوتر
 
 ```bash
 python main.py
 ```
 
-On first launch Sendlan creates a local `config.json`. The file stores the
-device name, persistent device ID, network settings, theme, and download
-directory. It is excluded from Git because those values are specific to each
-machine.
-
-## Network Setup
-
-Peer discovery uses UDP port `50000`; file and chat transfers use TCP port
-`50001`. Allow incoming traffic on both ports on each device. Both devices
-must be on a network that permits local broadcast traffic. Guest Wi-Fi,
-client isolation, and some VPNs prevent peer discovery.
-
-Windows PowerShell (run once as Administrator, on a Private network):
-
-```powershell
-New-NetFirewallRule -DisplayName "Sendlan Discovery" -Direction Inbound -Protocol UDP -LocalPort 50000 -RemoteAddress LocalSubnet -Action Allow -Profile Private
-New-NetFirewallRule -DisplayName "Sendlan Transfers" -Direction Inbound -Protocol TCP -LocalPort 50001 -RemoteAddress LocalSubnet -Action Allow -Profile Private
-```
-
-On macOS, allow Sendlan through the firewall and grant Local Network access if
-macOS prompts for it. With UFW on Linux:
+### بناء نسخة Android داخل مجلد `android`
 
 ```bash
-sudo ufw allow 50000/udp
-sudo ufw allow 50001/tcp
+cd /home/xq/sendlan
+flet build apk android -o android/build
 ```
 
-## Data and Security
+هذا الأمر يبني تطبيق Android باستخدام الملف الرئيسي داخل مجلد `android/` ويضع النتيجة داخل `android/build/`.
 
-Received files are written to a temporary file and moved into `downloads/`
-only after size and checksum verification. Existing files are not overwritten.
-`config.json` and received files are ignored by Git; the repository keeps only
-the empty `downloads/` directory marker.
+ملاحظة فنية: تم تثبيت توافق Flutter/Flet عبر `android/pyproject.toml` بحيث يلتزم مشروع Android بـ `jni ^1.1.0` لتجنب خطأ `package:jni ^1.1.0` أثناء الإنشاء.
 
-SHA-256 detects accidental corruption but does not encrypt traffic or
-authenticate peers. Use Sendlan on trusted local networks.
+### ملاحظة مهمة
+
+- التطبيق الرئيسي desktop لا يزال يعمل من `main.py`
+- نسخة الهاتف مستقلة داخل مجلد `android/`
+- يستخدم ملف الصوت `assets/notification.wav` للتنبيه عند وصول رسائل الدردشة في نسخة desktop والهاتف
+- يجب على المستقبل قبول الملف أو رفضه؛ يُلغى الطلب تلقائيًا إذا لم يصل رد خلال 30 ثانية
+
+---
+
+## English
+
+SendLan is a local messaging app for devices on the same LAN. The desktop app remains unchanged, while the phone version is prepared separately under the `android/` folder using Flet.
+
+### Run on desktop
+
+```bash
+python main.py
+```
+
+### Build the Android version inside the `android` folder
+
+```bash
+cd /home/xq/sendlan
+flet build apk android -o android/build
+```
+
+This command builds the Android app using the `android/main.py` entry point and writes the output under `android/build/`.
+
+Technical note: the project pins `jni ^1.1.0` in `android/pyproject.toml` so the generated Flutter app avoids the `package:jni ^1.1.0` version mismatch during APK builds.
+
+### Important note
+
+- The desktop app remains in `main.py`
+- The mobile version is kept in the `android/` folder
+- The `assets/notification.wav` sound plays when chat messages arrive in both desktop and mobile apps
+- The recipient must accept or reject incoming files; unanswered requests expire after 30 seconds
+
+## Project structure
+
+```text
+sendlan/
+├── main.py                     # desktop app
+├── README.md
+├── requirements.txt
+├── assets/
+│   ├── icon.png
+│   └── notification.wav
+├── src/
+│   └── sendlan/
+│       ├── flet_app.py
+│       └── ...
+├── android/
+│   ├── main.py                # Android/Flet app entry
+│   └── README.md
+└── android/build/             # APK output directory after build
+```

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -14,14 +15,26 @@ import CTkFileDialog
 from CTkMenuBarPlus import CTkMenuBar, CustomDropdownMenu
 from CTkMessagebox import CTkMessagebox
 from PIL import Image, ImageTk
+from playsound3 import PlaysoundException, playsound
 from tkinterdnd2 import DND_FILES, DND_TEXT, TkinterDnD
 from tkinter import TclError
 
 from ..config import ConfigError, ConfigStore, default_device_name
 from ..core.discovery import PeerDiscovery
 from ..core.receiver import Receiver
-from ..core.sender import TransferCancelled, send_file, send_text
-from ..ui.components import ChatFrame, PeerListFrame, TransferProgressFrame
+from ..core.sender import (
+    FileOfferTimeout,
+    FileTransferRejected,
+    TransferCancelled,
+    send_file,
+    send_text,
+)
+from ..ui.components import (
+    ChatFrame,
+    PeerListFrame,
+    TransferDirection,
+    TransferProgressFrame,
+)
 from ..utils.helpers import resolve_downloads_dir
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -53,6 +66,7 @@ class MainWindow(customtkinter.CTk, TkinterDnD.DnDWrapper):
         self._closing = False
         self._queue_after_id: str | None = None
         self._settings_dialog: customtkinter.CTkToplevel | None = None
+        self._file_offer_dialogs: dict[str, customtkinter.CTkToplevel] = {}
 
         self._build_layout()
         if self._dnd_available:
@@ -393,7 +407,24 @@ class MainWindow(customtkinter.CTk, TkinterDnD.DnDWrapper):
     def _handle_event(self, event: dict[str, Any]) -> None:
         """Apply one queued network event to UI state and widgets."""
         event_type = event.get("type")
-        if event_type == "device_id_changed":
+        if event_type == "file_offer":
+            self._show_file_offer(event)
+        elif event_type == "file_offer_timeout":
+            self._close_file_offer(event["transfer_id"])
+            self._set_status(f'File offer timed out: {event["filename"]}')
+        elif event_type == "file_offer_rejected":
+            self._close_file_offer(event["transfer_id"])
+            self._set_status(f'File offer rejected: {event["filename"]}')
+        elif event_type in ("outgoing_offer_timeout", "outgoing_rejected"):
+            filename = event["filename"]
+            message = (
+                f"File offer expired: {filename}"
+                if event_type == "outgoing_offer_timeout"
+                else f"File offer rejected: {filename}"
+            )
+            self._set_status(message)
+            self._finish_transfer(event["transfer_id"])
+        elif event_type == "device_id_changed":
             self.settings.device_id = event["device_id"]
             try:
                 self.config_store.save(self.settings)
@@ -417,26 +448,44 @@ class MainWindow(customtkinter.CTk, TkinterDnD.DnDWrapper):
             self.chat_frame.append_message(
                 f'{event["sender"]} ({event["source"]})',
                 event["message"],
+                sender_type="other",
             )
+            self._play_notification_sound()
         elif event_type == "chat_sent":
-            self.chat_frame.append_message("Me", event["message"])
+            self.chat_frame.append_message(
+                "Me",
+                event["message"],
+                sender_type="me",
+            )
         elif event_type == "file_progress":
             self._transfer = {
                 "direction": "incoming",
                 "id": event["transfer_id"],
             }
-            self._show_progress(event["filename"], event["transferred"], event["total"])
+            self._show_progress(
+                event["filename"],
+                event["transferred"],
+                event["total"],
+                "Receiving",
+            )
         elif event_type == "outgoing_progress":
             self._transfer = {
                 "direction": "outgoing",
                 "id": event["transfer_id"],
                 "cancel": event["cancel"],
             }
-            self._show_progress(event["filename"], event["transferred"], event["total"])
+            self._show_progress(
+                event["filename"],
+                event["transferred"],
+                event["total"],
+                "Sending",
+            )
         elif event_type == "file_received":
             self.chat_frame.append_message(
                 "File",
                 f'Received {event["filename"]} from {event["source"]}',
+                sender_type="other",
+                kind="file",
             )
             if (
                 self._transfer is not None
@@ -450,6 +499,8 @@ class MainWindow(customtkinter.CTk, TkinterDnD.DnDWrapper):
             self.chat_frame.append_message(
                 "File",
                 f'Sent {event["filename"]} to {event["host"]}',
+                sender_type="me",
+                kind="file",
             )
         elif event_type == "outgoing_complete":
             self._set_status(
@@ -469,6 +520,140 @@ class MainWindow(customtkinter.CTk, TkinterDnD.DnDWrapper):
         """Refresh peers and enable chat when a live peer is selected."""
         self.peer_list.set_peers(list(self.peers.values()))
         self.chat_frame.set_enabled(self.peer_list.selected_peer() is not None)
+
+    def _play_notification_sound(self) -> None:
+        """Play the packaged notification sound without blocking the UI."""
+        sound_path = PROJECT_ROOT / "assets" / "notification.wav"
+        try:
+            playsound(sound_path, block=False)
+        except PlaysoundException as exc:
+            self._set_status(f"Notification sound unavailable: {exc}")
+
+    def _show_file_offer(self, event: dict[str, Any]) -> None:
+        """Ask the user to accept or reject a file before receiving it."""
+        transfer_id = event["transfer_id"]
+        response_event = event["response_event"]
+        response = event["response"]
+        remaining = event["deadline"] - time.monotonic()
+        if remaining <= 0:
+            self.receiver.respond_to_file_offer(
+                response_event,
+                response,
+                False,
+                timed_out=True,
+            )
+            return
+
+        dialog = customtkinter.CTkToplevel(self)
+        dialog.title("Incoming file")
+        dialog.geometry("420x190")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+        self._file_offer_dialogs[transfer_id] = dialog
+
+        customtkinter.CTkLabel(
+            dialog,
+            text=f'{event["sender"]} ({event["source"]}) wants to send:',
+            wraplength=380,
+            justify="left",
+        ).pack(padx=20, pady=(20, 6), anchor="w")
+        customtkinter.CTkLabel(
+            dialog,
+            text=f'{event["filename"]} · {self._format_file_size(event["size"])}',
+            font=("Arial", 13, "bold"),
+            wraplength=380,
+            justify="left",
+        ).pack(padx=20, pady=4, anchor="w")
+        customtkinter.CTkLabel(
+            dialog,
+            text="Accept this file? The request expires in 30 seconds.",
+            wraplength=380,
+        ).pack(padx=20, pady=4, anchor="w")
+
+        buttons = customtkinter.CTkFrame(dialog, fg_color="transparent")
+        buttons.pack(fill="x", padx=20, pady=(8, 14))
+        customtkinter.CTkButton(
+            buttons,
+            text="Reject",
+            fg_color=("gray70", "gray30"),
+            hover_color=("gray60", "gray35"),
+            command=lambda: self._answer_file_offer(
+                transfer_id,
+                False,
+                response_event,
+                response,
+            ),
+        ).pack(side="right", padx=(8, 0))
+        customtkinter.CTkButton(
+            buttons,
+            text="Accept",
+            command=lambda: self._answer_file_offer(
+                transfer_id,
+                True,
+                response_event,
+                response,
+            ),
+        ).pack(side="right")
+        dialog.protocol(
+            "WM_DELETE_WINDOW",
+            lambda: self._answer_file_offer(
+                transfer_id,
+                False,
+                response_event,
+                response,
+            ),
+        )
+        dialog.after(
+            max(1, int(remaining * 1000)),
+            lambda: self._answer_file_offer(
+                transfer_id,
+                False,
+                response_event,
+                response,
+                timed_out=True,
+            ),
+        )
+
+    def _answer_file_offer(
+        self,
+        transfer_id: str,
+        accepted: bool,
+        response_event: threading.Event,
+        response: dict[str, Any],
+        *,
+        timed_out: bool = False,
+    ) -> None:
+        """Send the user's decision to the receiver and dismiss its dialog."""
+        self.receiver.respond_to_file_offer(
+            response_event,
+            response,
+            accepted,
+            timed_out=timed_out,
+        )
+        self._close_file_offer(transfer_id)
+        if timed_out:
+            self._set_status("Incoming file request expired")
+        elif not accepted:
+            self._set_status("Incoming file rejected")
+
+    def _close_file_offer(self, transfer_id: str) -> None:
+        """Close a pending offer dialog if it is still open."""
+        dialog = self._file_offer_dialogs.pop(transfer_id, None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.grab_release()
+            dialog.destroy()
+
+    @staticmethod
+    def _format_file_size(size: int) -> str:
+        """Format a file size for the incoming-offer prompt."""
+        if size < 1024:
+            return f"{size} B"
+        if size < 1024**2:
+            return f"{size / 1024:.1f} KB"
+        if size < 1024**3:
+            return f"{size / 1024**2:.1f} MB"
+        return f"{size / 1024**3:.1f} GB"
 
     def _select_peer(self, peer: dict[str, Any]) -> None:
         """Select a discovered peer for chat and file transfers."""
@@ -624,6 +809,22 @@ class MainWindow(customtkinter.CTk, TkinterDnD.DnDWrapper):
                     "filename": current_path.name,
                 }
             )
+        except FileOfferTimeout:
+            self.events.put(
+                {
+                    "type": "outgoing_offer_timeout",
+                    "transfer_id": transfer_id,
+                    "filename": current_path.name,
+                }
+            )
+        except FileTransferRejected:
+            self.events.put(
+                {
+                    "type": "outgoing_rejected",
+                    "transfer_id": transfer_id,
+                    "filename": current_path.name,
+                }
+            )
         except (OSError, ValueError) as exc:
             self.events.put({"type": "send_error", "message": str(exc)})
             self.events.put({"type": "outgoing_failed", "transfer_id": transfer_id})
@@ -638,9 +839,20 @@ class MainWindow(customtkinter.CTk, TkinterDnD.DnDWrapper):
             self.receiver.cancel_transfer(self._transfer["id"])
         self._set_status("Cancelling transfer...")
 
-    def _show_progress(self, filename: str, transferred: int, total: int) -> None:
+    def _show_progress(
+        self,
+        filename: str,
+        transferred: int,
+        total: int,
+        direction: TransferDirection,
+    ) -> None:
         """Update the transfer component from a queued progress event."""
-        self.progress_frame.set_progress(filename, transferred, total)
+        self.progress_frame.set_progress(
+            filename,
+            transferred,
+            total,
+            direction,
+        )
 
     def _finish_transfer(self, transfer_id: str | None = None) -> None:
         """Clear progress if the event belongs to the currently shown transfer."""

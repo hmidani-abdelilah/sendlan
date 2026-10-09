@@ -3,10 +3,18 @@
 from .discovery import Peer, PeerDiscovery
 from .protocol import FileTransferTask, Message, Protocol, ProtocolError
 from .receiver import Receiver
-from .sender import TransferCancelled, send_file, send_text
+from .sender import (
+    FileOfferTimeout,
+    FileTransferRejected,
+    TransferCancelled,
+    send_file,
+    send_text,
+)
 
 __all__ = [
     "FileTransferTask",
+    "FileOfferTimeout",
+    "FileTransferRejected",
     "Message",
     "Peer",
     "PeerDiscovery",

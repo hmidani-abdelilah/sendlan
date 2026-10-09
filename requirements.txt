@@ -5,3 +5,6 @@ CTkMenuBarPlus
 Pillow
 tkinterdnd2
 psutil
+cryptography 
+flet
+playsound3
